@@ -25,6 +25,24 @@ test("GithubExecutor.buildUrl routes response-format models to /responses", () =
   }
 });
 
+test("GithubExecutor.buildUrl routes GPT-5.4-mini (with provider prefix) to /responses", () => {
+  const executor = new GithubExecutor();
+  const url = executor.buildUrl("gh/gpt-5.4-mini", true);
+  assert.equal(url, "https://api.githubcopilot.com/responses");
+});
+
+test("GithubExecutor.buildUrl keeps GPT-5-mini on /chat/completions", () => {
+  const executor = new GithubExecutor();
+  const url = executor.buildUrl("gpt-5-mini", true);
+  assert.equal(url, "https://api.githubcopilot.com/chat/completions");
+});
+
+test("GithubExecutor.buildUrl routes GPT-5.3-codex to /responses", () => {
+  const executor = new GithubExecutor();
+  const url = executor.buildUrl("gh/gpt-5.3-codex", true);
+  assert.equal(url, "https://api.githubcopilot.com/responses");
+});
+
 test("GithubExecutor.transformRequest injects JSON response instructions for Claude and strips reasoning fields", () => {
   const executor = new GithubExecutor();
   const body = {
@@ -49,6 +67,22 @@ test("GithubExecutor.transformRequest injects JSON response instructions for Cla
   assert.match(result.messages[0].content, /Respond only with valid JSON/);
   assert.equal(result.messages[2].reasoning_text, undefined);
   assert.equal(result.messages[2].reasoning_content, undefined);
+});
+
+test("GithubExecutor.transformRequest coerces responses input to string for GPT-5.3-codex", () => {
+  const executor = new GithubExecutor();
+  const body = {
+    messages: [
+      { role: "system", content: "You are concise." },
+      { role: "user", content: [{ type: "text", text: "Reply with exactly OK" }] },
+    ],
+  };
+
+  const result = executor.transformRequest("gh/gpt-5.3-codex", body, false, {});
+
+  assert.equal(typeof result.input, "string");
+  assert.match(result.input, /system: You are concise\./);
+  assert.match(result.input, /user: Reply with exactly OK/);
 });
 
 test("GithubExecutor.buildHeaders prefers Copilot token and sets GitHub-specific headers", () => {
