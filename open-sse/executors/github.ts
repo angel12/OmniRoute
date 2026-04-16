@@ -2,6 +2,58 @@ import { BaseExecutor, ExecuteInput } from "./base.ts";
 import { PROVIDERS, OAUTH_ENDPOINTS } from "../config/constants.ts";
 import { getModelTargetFormat } from "../config/providerModels.ts";
 
+function normalizeModelId(model: string): string {
+  const raw = String(model || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw.includes("/")) return raw.split("/").pop() || raw;
+  return raw;
+}
+
+function shouldUseGitHubResponsesApi(model: string): boolean {
+  const normalized = normalizeModelId(model);
+  if (!normalized) return false;
+
+  // Explicit registry metadata remains the strongest signal.
+  if (getModelTargetFormat("gh", normalized) === "openai-responses") {
+    return true;
+  }
+
+  // Match Hermes/opencode Copilot behavior:
+  // GPT-5+ models use Responses API, except gpt-5-mini.
+  const match = /^gpt-(\d+)/.exec(normalized);
+  if (!match) return false;
+
+  const major = Number.parseInt(match[1], 10);
+  return Number.isFinite(major) && major >= 5 && !normalized.startsWith("gpt-5-mini");
+}
+
+function messageContentToText(content: any): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const parts: string[] = [];
+  for (const part of content) {
+    if (typeof part === "string") {
+      parts.push(part);
+      continue;
+    }
+    if (part && typeof part.text === "string") {
+      parts.push(part.text);
+    }
+  }
+  return parts.join(" ").trim();
+}
+
+function coerceResponsesInputFromMessages(messages: any[]): string {
+  const lines: string[] = [];
+  for (const msg of messages) {
+    const role = typeof msg?.role === "string" ? msg.role : "user";
+    const text = messageContentToText(msg?.content);
+    if (text) lines.push(`${role}: ${text}`);
+  }
+  return lines.join("\n").trim();
+}
+
 export class GithubExecutor extends BaseExecutor {
   constructor() {
     super("github", PROVIDERS.github);
@@ -20,8 +72,7 @@ export class GithubExecutor extends BaseExecutor {
   }
 
   buildUrl(model, stream, urlIndex = 0) {
-    const targetFormat = getModelTargetFormat("gh", model);
-    if (targetFormat === "openai-responses") {
+    if (shouldUseGitHubResponsesApi(model)) {
       return (
         this.config.responsesBaseUrl ||
         this.config.baseUrl?.replace(/\/chat\/completions\/?$/, "/responses") ||
@@ -77,6 +128,24 @@ export class GithubExecutor extends BaseExecutor {
           delete msg.reasoning_text;
           delete msg.reasoning_content;
         }
+      }
+    }
+
+    // Some GitHub responses-only models reject object/array input payloads.
+    // For those models, coerce OpenAI chat-style messages to a plain text input.
+    if (shouldUseGitHubResponsesApi(model) && typeof modifiedBody.input !== "string") {
+      if (Array.isArray(modifiedBody.messages)) {
+        const textInput = coerceResponsesInputFromMessages(modifiedBody.messages);
+        modifiedBody.input =
+          textInput ||
+          (typeof modifiedBody.input === "string"
+            ? modifiedBody.input
+            : JSON.stringify(modifiedBody.input ?? ""));
+      } else {
+        modifiedBody.input =
+          typeof modifiedBody.input === "string"
+            ? modifiedBody.input
+            : JSON.stringify(modifiedBody.input ?? "");
       }
     }
 
